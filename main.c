@@ -3,6 +3,7 @@
 #include <stdio.h>      // I/O related functionality (e.g. perror(1))
 #include <arpa/inet.h>  // Helper for conversions (e.g. htons(1))
 #include <unistd.h>     // Miscellaneous functions (e.g. close(1))
+#include <string.h>     // String helper functions (e.g. strcmp(2))
 
 #define PORT 8080
 #define MAX_CONNECTIONS 1000
@@ -49,9 +50,46 @@ int tb_listen_and_serve(unsigned short int port) {
   int client_socket_fd = accept(socket_fd, (struct sockaddr*)&client_address, &client_address_length);
   if (client_socket_fd == -1) {
     perror("failed to create client socket");
-      return -1;
+    return -1;
   }
   printf("Client connected with address '%s'\n", inet_ntoa(client_address.sin_addr));
+
+  // Open client socket file descriptor.
+  FILE* client_file = fdopen(client_socket_fd, "r");
+  if (client_file == NULL) {
+    perror("failed to open client socket file descriptor");
+    return -1;
+  }
+
+  // Read from client connection.
+  int line_length = 256;
+  char line[line_length];
+  while (fgets(line, line_length, client_file) != NULL) {
+    printf("Client sent: %s", line);
+
+    if (strcmp(line, "\r\n\r\n") != 0) {
+      break;
+    }
+  }
+  // TODO: Read from socket and parse request.
+
+  char response[] = "HTTP/1.1 200 OK\r\n\
+Date: Mon, 27 Jul 2009 12:28:53 GMT\r\n\
+Server: TinyBlog\r\n\
+Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n\
+Content-Length: 56\r\n\
+Content-Type: text/html\r\n\
+Connection: Closed\r\n\r\n\
+<html>\r\n\
+<body>\r\n\
+<h1>Hello, World!</h1>\r\n\
+</body>\r\n\
+</html>";
+
+  if (send(client_socket_fd, response, sizeof(response) / sizeof(response[0]), 0) == -1) {
+    perror("failed to send response");
+    return -1;
+  }
 
   // Close the server socket.
   if (close(socket_fd) != 0) {
