@@ -7,6 +7,7 @@
 #include <stdbool.h>    // For true and false constants
 
 #define PORT 8080
+#define WEB_ROOT "web"
 #define MAX_CONNECTIONS 1000
 
 // Forward declarations of functions.
@@ -16,10 +17,133 @@ int main(int argv, char* argc[]) {
   return tb_listen_and_serve(PORT);
 }
 
+int tb_accept_client(int socket_fd, struct sockaddr_in server_address) {
+  struct sockaddr_in client_address;
+  socklen_t client_address_length = sizeof(server_address);
+
+  int client_socket_fd = accept(socket_fd, (struct sockaddr*)&client_address, &client_address_length);
+  if (client_socket_fd == -1) {
+    perror("failed to create client socket");
+    return -1;
+  }
+  printf("Client connected with address '%s'\n", inet_ntoa(client_address.sin_addr));
+
+  return client_socket_fd;
+}
+
 typedef struct Request {
   char method[8];
   char url[256];
 } Request;
+
+int tb_parse_request(Request* restrict request, FILE* restrict client_file) {
+  // Read from client connection.
+  int line_length = 256;
+  char line[line_length];
+  char method[8];
+  char url[256];
+
+  // Parse HTTP request.
+  if (fgets(line, line_length, client_file) == NULL) {
+    perror("failed to parse empty request");
+    return -1;
+  }
+
+  if (sscanf(line, "%7s %255s", method, url) != 2) {
+    perror("failed to parse invalid request");
+    return -1;
+  }
+
+  strcpy(request->method, method);
+  strcpy(request->url, url);
+
+  while (fgets(line, line_length, client_file) != NULL) {
+    //printf("Client sent: %s", line);
+
+    if (strcmp(line, "\r\n") == 0) {
+      break;
+    }
+  }
+
+  return 0;
+}
+
+int tb_copy_file_content( FILE* restrict source, FILE* restrict destination) {
+  int line_length = 256;
+  char line[line_length];
+  while (fgets(line, line_length, source) != NULL) {
+    if (fputs(line, source) < 0) {
+      perror("failed to write to destination file");
+      return -1;
+    }
+  }
+
+  return 0;
+}
+
+int tb_serve_file(FILE* restrict client_file, char path[]) {
+  char file_path[256];
+  strncat(file_path, WEB_ROOT, sizeof(WEB_ROOT));
+  strncat(file_path, path, 100);
+
+  FILE* source_file = fopen(file_path, "r");
+  if (source_file == NULL) {
+    perror("failed to open source file");
+    return -1;
+  }
+
+  // TODO: Generate response header and prepend.
+
+  if (tb_copy_file_content(source_file, client_file) != 0) {
+    return -1;
+  }
+
+  return 0;
+}
+
+int tb_handle_client(int client_socket_fd) {
+  // Open client socket file descriptor.
+  FILE* client_file = fdopen(client_socket_fd, "r");
+  if (client_file == NULL) {
+    perror("failed to open client socket file descriptor");
+    return -1;
+  }
+
+  Request request = {};
+  if (tb_parse_request(&request, client_file) != 0) {
+    if (fclose(client_file) != 0) {
+      perror("failed to close the client file descriptor");
+    }
+    return -1;
+  }
+  printf("Request method: %s Request URL: %s\n", request.method, request.url);
+
+  char response[] = "HTTP/1.1 200 OK\r\n\
+Date: Mon, 27 Jul 2009 12:28:53 GMT\r\n\
+Server: TinyBlog\r\n\
+Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n\
+Content-Length: 56\r\n\
+Content-Type: text/html\r\n\
+Connection: Closed\r\n\r\n\
+<html>\r\n\
+<body>\r\n\
+<h1>Hello, World!</h1>\r\n\
+</body>\r\n\
+</html>";
+
+  if (send(client_socket_fd, response, sizeof(response) / sizeof(char), 0) == -1) {
+    perror("failed to send response");
+    return -1;
+  }
+
+  // Close the client file (also closes the socket).
+  if (fclose(client_file) != 0) {
+    perror("failed to close the client file descriptor");
+    return -1;
+  }
+
+  return 0;
+}
 
 int tb_listen_and_serve(unsigned short int port) {
   // Initialize a socket for the server to listen on.
@@ -52,78 +176,14 @@ int tb_listen_and_serve(unsigned short int port) {
 
   while (true) {
     // Wait for incomming client connections.
-    struct sockaddr_in client_address;
-    socklen_t client_address_length = sizeof(server_address);
-    int client_socket_fd = accept(socket_fd, (struct sockaddr*)&client_address, &client_address_length);
-    if (client_socket_fd == -1) {
-      perror("failed to create client socket");
-      return -1;
-    }
-    printf("Client connected with address '%s'\n", inet_ntoa(client_address.sin_addr));
+    int client_socket_fd = tb_accept_client(socket_fd, server_address);
 
-    // Open client socket file descriptor.
-    FILE* client_file = fdopen(client_socket_fd, "r");
-    if (client_file == NULL) {
-      perror("failed to open client socket file descriptor");
-      return -1;
-    }
-
-    // Read from client connection.
-    int line_length = 256;
-    char line[line_length];
-    char method[8];
-    char url[256];
-    Request request = {};
-
-    // Parse HTTP request.
-    if (fgets(line, line_length, client_file) == NULL) {
-      printf("Closing client connection due to empty request.\n");
-      if (fclose(client_file) != 0) {
-        perror("failed to close the client file descriptor");
-        return -1;
+    if (tb_handle_client(client_socket_fd) != 0) {
+      perror("failed to handle client");
+      if (close(client_socket_fd) != 0) {
+        perror("failed to close client socket");
       }
-    }
-    if (sscanf(line, "%7s %255s", method, url) != 2) {
-      printf("Closing client connection due invalid HTTP request.\n");
-      if (fclose(client_file) != 0) {
-        perror("failed to close the client file descriptor");
-        return -1;
-      }
-    }
-    strcpy(request.method, method);
-    strcpy(request.url, url);
-
-    while (fgets(line, line_length, client_file) != NULL) {
-      //printf("Client sent: %s", line);
-
-      if (strcmp(line, "\r\n") == 0) {
-        break;
-      }
-    }
-    printf("Request method: %s Request URL: %s\n", request.method, request.url);
-
-    char response[] = "HTTP/1.1 200 OK\r\n\
-Date: Mon, 27 Jul 2009 12:28:53 GMT\r\n\
-Server: TinyBlog\r\n\
-Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n\
-Content-Length: 56\r\n\
-Content-Type: text/html\r\n\
-Connection: Closed\r\n\r\n\
-<html>\r\n\
-<body>\r\n\
-<h1>Hello, World!</h1>\r\n\
-</body>\r\n\
-</html>";
-
-    if (send(client_socket_fd, response, sizeof(response) / sizeof(response[0]), 0) == -1) {
-      perror("failed to send response");
-      return -1;
-    }
-
-    // Close the client file (also closes the socket).
-    if (fclose(client_file) != 0) {
-      perror("failed to close the client file descriptor");
-      return -1;
+      continue;
     }
   }
 
