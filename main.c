@@ -5,6 +5,8 @@
 #include <unistd.h>     // Miscellaneous functions (e.g. close(1))
 #include <string.h>     // String helper functions (e.g. strcmp(2))
 #include <stdbool.h>    // For true and false constants
+#include <time.h>       // Time related functionality
+#include <sys/stat.h>   // For fetching file stats
 
 #define PORT 8080
 #define WEB_ROOT "web"
@@ -68,11 +70,11 @@ int tb_parse_request(Request* restrict request, FILE* restrict client_file) {
   return 0;
 }
 
-int tb_copy_file_content( FILE* restrict source, FILE* restrict destination) {
+int tb_copy_file_content(FILE* restrict source, FILE* restrict destination) {
   int line_length = 256;
   char line[line_length];
   while (fgets(line, line_length, source) != NULL) {
-    if (fputs(line, source) < 0) {
+    if (fputs(line, destination) < 0) {
       perror("failed to write to destination file");
       return -1;
     }
@@ -81,18 +83,85 @@ int tb_copy_file_content( FILE* restrict source, FILE* restrict destination) {
   return 0;
 }
 
+enum connection_state { closed };
+
+typedef struct HttpHeader {
+  char serverName[50];
+  char contentType[50];
+  time_t date;
+  time_t lastModified;
+  int contentLength;
+  enum connection_state connection;
+} HttpHeader;
+
+int tb_header_to_string(char* buffer, int bufferLength, HttpHeader header) {
+  char* date = ctime(&header.date);
+  if (date == NULL) {
+    perror("failed to convert date to local time");
+    return -1;
+  }
+
+  char* lastModified = ctime(&header.lastModified);
+  if (lastModified == NULL) {
+    perror("failed to convert lastModified to local time");
+    return -1;
+  }
+
+  snprintf(buffer,
+    bufferLength,
+    "HTTP/1.1 200 OK\r\n\
+Date: %s\
+Server: %s\r\n\
+Last-Modified: %s\
+Content-Length: %d\r\n\
+Content-Type: %s\r\n\
+Connection: %s\r\n\r\n",
+date,
+header.serverName,
+lastModified,
+header.contentLength,
+header.contentType,
+"Closed");
+
+  return 0;
+}
+
 int tb_serve_file(FILE* restrict client_file, char path[]) {
   char file_path[256];
-  strncat(file_path, WEB_ROOT, sizeof(WEB_ROOT));
-  strncat(file_path, path, 100);
+  snprintf(file_path, sizeof(file_path), "%s%s", WEB_ROOT, path);
 
+  printf("File: %s\n", file_path);
   FILE* source_file = fopen(file_path, "r");
   if (source_file == NULL) {
     perror("failed to open source file");
     return -1;
   }
 
-  // TODO: Generate response header and prepend.
+  time_t now;
+  time(&now);
+
+  struct stat fileStats;
+  if (stat(file_path, &fileStats) != 0) {
+    perror("failed to fetch file stats");
+    return -1;
+  }
+
+  HttpHeader header = {
+    .date = now,
+    .serverName = "Tineblog",
+    .lastModified = now,
+    .contentLength = fileStats.st_size,
+    .contentType = "text/html",
+    .connection = closed,
+  };
+
+  char headerString[256];
+  tb_header_to_string(headerString, 256, header);
+
+  if (fputs(headerString, client_file) < 0) {
+    perror("failed to write header to client file");
+    return -1;
+  }
 
   if (tb_copy_file_content(source_file, client_file) != 0) {
     return -1;
@@ -103,7 +172,7 @@ int tb_serve_file(FILE* restrict client_file, char path[]) {
 
 int tb_handle_client(int client_socket_fd) {
   // Open client socket file descriptor.
-  FILE* client_file = fdopen(client_socket_fd, "r");
+  FILE* client_file = fdopen(client_socket_fd, "r+");
   if (client_file == NULL) {
     perror("failed to open client socket file descriptor");
     return -1;
@@ -118,21 +187,7 @@ int tb_handle_client(int client_socket_fd) {
   }
   printf("Request method: %s Request URL: %s\n", request.method, request.url);
 
-  char response[] = "HTTP/1.1 200 OK\r\n\
-Date: Mon, 27 Jul 2009 12:28:53 GMT\r\n\
-Server: TinyBlog\r\n\
-Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT\r\n\
-Content-Length: 56\r\n\
-Content-Type: text/html\r\n\
-Connection: Closed\r\n\r\n\
-<html>\r\n\
-<body>\r\n\
-<h1>Hello, World!</h1>\r\n\
-</body>\r\n\
-</html>";
-
-  if (send(client_socket_fd, response, sizeof(response) / sizeof(char), 0) == -1) {
-    perror("failed to send response");
+  if (tb_serve_file(client_file, request.url) != 0){
     return -1;
   }
 
