@@ -167,6 +167,11 @@ int tb_serve_file(FILE* restrict client_file, char path[]) {
     return -1;
   }
 
+  if (fclose(source_file) != 0) {
+    perror("failed to close the source file descriptor");
+    return -1;
+  }
+
   return 0;
 }
 
@@ -187,7 +192,7 @@ int tb_handle_client(int client_socket_fd) {
   }
   printf("Request method: %s Request URL: %s\n", request.method, request.url);
 
-  if (tb_serve_file(client_file, request.url) != 0){
+  if (tb_serve_file(client_file, request.url) != 0) {
     return -1;
   }
 
