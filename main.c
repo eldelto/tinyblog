@@ -83,9 +83,11 @@ int tb_copy_file_content(FILE* restrict source, FILE* restrict destination) {
   return 0;
 }
 
+enum status_code { ok, notFound };
 enum connection_state { closed };
 
 typedef struct HttpHeader {
+  enum status_code statusCode;
   char serverName[50];
   char contentType[50];
   time_t date;
@@ -93,6 +95,14 @@ typedef struct HttpHeader {
   int contentLength;
   enum connection_state connection;
 } HttpHeader;
+
+char* tb_status_code_to_string(enum status_code status_code) {
+  switch (status_code) {
+  case ok: return "200 OK";
+  case notFound: return "404 NOT FOUND";
+  default: return "500 INTERNAL SERVER ERROR";
+  }
+}
 
 int tb_header_to_string(char* buffer, int bufferLength, HttpHeader header) {
   char* date = ctime(&header.date);
@@ -109,13 +119,14 @@ int tb_header_to_string(char* buffer, int bufferLength, HttpHeader header) {
 
   snprintf(buffer,
     bufferLength,
-    "HTTP/1.1 200 OK\r\n\
+    "HTTP/1.1 %s\r\n\
 Date: %s\
 Server: %s\r\n\
 Last-Modified: %s\
 Content-Length: %d\r\n\
 Content-Type: %s\r\n\
 Connection: %s\r\n\r\n",
+tb_status_code_to_string(header.statusCode),
 date,
 header.serverName,
 lastModified,
@@ -127,33 +138,52 @@ header.contentType,
 }
 
 int tb_serve_file(FILE* restrict client_file, char path[]) {
+  time_t now;
+  time(&now);
+
+  HttpHeader header = {
+    .statusCode = ok,
+    .date = now,
+    .serverName = "Tineblog",
+    .lastModified = now,
+    .contentType = "text/html",
+    .connection = closed,
+  };
+
+  if (strcmp(path, "/") == 0) {
+    path = "/index.html";
+  }
+
   char file_path[256];
   snprintf(file_path, sizeof(file_path), "%s%s", WEB_ROOT, path);
 
   printf("File: %s\n", file_path);
   FILE* source_file = fopen(file_path, "r");
+
+  // Write 404 Not Found to the client.
   if (source_file == NULL) {
     perror("failed to open source file");
-    return -1;
+    header.statusCode = notFound;
+
+    char headerString[256];
+    tb_header_to_string(headerString, 256, header);
+
+    if (fputs(headerString, client_file) < 0) {
+      perror("failed to write header to client file");
+      return -1;
+    }
+
+    return 0;
   }
 
-  time_t now;
-  time(&now);
-
+  // Continue to write the file content to the client.
   struct stat fileStats;
   if (stat(file_path, &fileStats) != 0) {
     perror("failed to fetch file stats");
     return -1;
   }
 
-  HttpHeader header = {
-    .date = now,
-    .serverName = "Tineblog",
-    .lastModified = now,
-    .contentLength = fileStats.st_size,
-    .contentType = "text/html",
-    .connection = closed,
-  };
+  header.contentLength = fileStats.st_size;
 
   char headerString[256];
   tb_header_to_string(headerString, 256, header);
