@@ -56,8 +56,8 @@ int tb_parse_request(Request* restrict request, FILE* restrict client_file) {
     return -1;
   }
 
-  strcpy(request->method, method);
-  strcpy(request->url, url);
+  memcpy(request->method, method, sizeof(method));
+  memcpy(request->url, url, sizeof(url));
 
   while (fgets(line, line_length, client_file) != NULL) {
     //printf("Client sent: %s", line);
